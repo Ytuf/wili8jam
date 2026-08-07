@@ -107,6 +107,7 @@ pico_enable_stdio_usb(wili8jam 0)
 pico_enable_stdio_uart(wili8jam 0)
 
 fw2_psram_app(wili8jam
+    POWER_ZONES DISPLAY AUDIO SDCARD USB_HUB
     VERSION 001
     DESCRIPTION "PICO-8 console with DVI, audio, and SD cartridges"
     REPOSITORY "https://github.com/evaderkrub/wili8jam"

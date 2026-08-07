@@ -643,11 +643,25 @@ static bool try_autorun(lua_State *L) {
 static constexpr int LINE_BUF_SIZE = 256;
 static uint8_t __uninitialized_psram("wili8jam_heap") psram_heap[6 * 1024 * 1024];
 
+static void draw_lcd_status() {
+    st7796_fill_screen(0x0000);
+    st7796_draw_text(36, 76, 3, 0xffff, 0x0000, "wili8jam");
+    st7796_draw_text(36, 132, 2, 0x07ff, 0x0000, "PICO-8 console on DVI");
+    st7796_draw_text(36, 178, 2, 0xffff, 0x0000, "Hold PAGE: About");
+    st7796_draw_text(36, 212, 2, 0xffff, 0x0000, "Hold HOME: Exit");
+}
+
 int main() {
     // fw2_psram_app's SRAM bootstrap has already brought up the board and PSRAM.
     DIAG("wili8jam: main entered\n");
+    board_init();
     fw2_app_recovery_init();
     DIAG("wili8jam: recovery ready\n");
+
+    st7796_init();
+    draw_lcd_status();
+    fw2_app_about_use_lcd_restore(draw_lcd_status);
+    board_backlight_set(1);
 
     // fw2_psram_app already initialized the board; diagnostics use BSP RTT.
 
