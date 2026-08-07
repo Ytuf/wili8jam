@@ -44,7 +44,7 @@ The build validates `build/wili8jam.uf2` as a PSRAM-only FW2App image. Install i
 The PICO-8 preprocessor has a host-side test suite that runs natively:
 
 ```bash
-gcc -o test_preprocess src/test_p8_preprocess.c src/p8_preprocess.c tlsf/tlsf.c -Isrc -Itlsf -lm -DTEST_HOST
+gcc -o test_preprocess src/test_p8_preprocess.c src/p8_preprocess.c tlsf/tlsf.c -I. -Isrc -Itlsf -lm -DTEST_HOST
 ./test_preprocess
 ```
 
