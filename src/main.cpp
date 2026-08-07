@@ -5,7 +5,10 @@
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
 #include "hardware/watchdog.h"
-#include "psram.h"
+#include "pico/platform/sections.h"
+extern "C" {
+#include "fw2.h"
+}
 #include "pio_usb.h"
 #include "usb-host/fwUSBHost.h"
 
@@ -525,7 +528,7 @@ static int lua_info(lua_State *L) {
     unsigned fk = (unsigned)(stats.free_bytes / 1024);
     unsigned tk = (unsigned)(psram_total_size / 1024);
     unsigned mhz = (unsigned)(clock_get_hz(clk_sys) / 1000000);
-    const char *fmt = "wili8jam / fruit jam\nrp2350b @ %u mhz\npsram: %uk free / %uk\n";
+    const char *fmt = "wili8jam v001 / freewili2\ngithub.com/evaderkrub/wili8jam\nrp2350b @ %u mhz\npsram: %uk free / %uk\n";
     printf(fmt, mhz, fk, tk);
     p8_console_printf(fmt, mhz, fk, tk);
 
@@ -722,24 +725,14 @@ static bool try_autorun(lua_State *L) {
 }
 
 static constexpr int LINE_BUF_SIZE = 256;
+static uint8_t __uninitialized_psram("wili8jam_heap") psram_heap[6 * 1024 * 1024];
 
 int main() {
-    // Overclock to 252 MHz (2x default). VCO=1260MHz (12*105), postdiv 5/1.
-    // Requires 1.3V core voltage. Tested and stable.
-    vreg_set_voltage(VREG_VOLTAGE_1_30);
-    sleep_ms(10); // let voltage stabilize
-    set_sys_clock_pll(1260000000, 5, 1); // VCO=1260MHz, postdiv1=5, postdiv2=1 → 252MHz
+    // fw2_psram_app's SRAM bootstrap has already brought up the board and PSRAM.
+    fw2_app_recovery_init();
 
-    // Enable 5V VBUS power to USB-A host port (GPIO 11 controls power switch)
-    gpio_init(11);
-    gpio_set_dir(11, GPIO_OUT);
-    gpio_put(11, 1);
-
-    // Configure PIO-USB host on port 1 (D+ = GPIO1, D- = GPIO2).
-    pio_usb_configuration_t pio_cfg = PIO_USB_DEFAULT_CONFIG;
-    pio_cfg.pin_dp = 1;
-    pio_cfg.tx_ch = 9;
-    tuh_configure(1, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
+    // PIO-USB host power and pins are Fruit Jam-specific; leave the host disabled
+    // until a FreeWili 2 hardware port is verified.
 
     // tusb_init() called inside here inits device CDC (port 0) + PIO-USB host (port 1)
     stdio_init_all();
@@ -805,27 +798,21 @@ int main() {
 
     printf("\n");
     printf("========================================\n");
-    printf("  wili8jam — Lua 5.4.7 on Fruit Jam\n");
+    printf("  wili8jam — Lua 5.4.7 on FreeWili 2\n");
     printf("  RP2350B @ %u MHz | USB Serial REPL\n", (unsigned)(clock_get_hz(clk_sys) / 1000000));
     printf("========================================\n");
 
-    // Init PSRAM
-    psram_total_size = setup_psram();
-    if (psram_total_size == 0) {
-        p8_console_print("err: no psram!\n");
-        p8_console_draw(); gfx_flip();
-        printf("ERROR: PSRAM not detected!\n");
-        while (true) tight_loop_contents();
-    }
+    // The linker owns PSRAM; the allocator uses an explicit non-aliasing section.
+    psram_total_size = sizeof(psram_heap);
     printf("PSRAM: %u KB detected\n", (unsigned)(psram_total_size / 1024));
     p8_console_printf("psram: %u kb\n", (unsigned)(psram_total_size / 1024));
     p8_console_draw(); gfx_flip();
 
     // Init TLSF allocator on PSRAM
-    psram_tlsf = tlsf_create_with_pool((void*)PSRAM_BASE, psram_total_size);
+    psram_tlsf = tlsf_create_with_pool(psram_heap, psram_total_size);
     if (!psram_tlsf) {
         printf("ERROR: Failed to init TLSF on PSRAM\n");
-        while (true) tight_loop_contents();
+        while (true) { fw2_app_recovery_task(); tight_loop_contents(); }
     }
     printf("TLSF heap ready.\n");
 
@@ -841,34 +828,17 @@ int main() {
     // Init editor
     p8_editor_init(psram_tlsf);
 
-    // Init SD card
-    printf("SD card: ");
-    if (f_mount(&fatfs, "", 1) == FR_OK) {
-        sd_mounted = true;
-        const char *type_str = "unknown";
-        switch (sd_get_type()) {
-            case SD_TYPE_SDv1: type_str = "SDv1"; break;
-            case SD_TYPE_SDv2: type_str = "SDv2"; break;
-            case SD_TYPE_SDHC: type_str = "SDHC"; break;
-        }
-        printf("mounted (%s)\n", type_str);
-        p8_console_printf("sd: %s\n", type_str);
-    } else {
-        printf("not found (REPL only)\n");
-        p8_console_print("sd: not found\n");
-    }
+    // The DISPLAY CPU has no direct SD path. The inherited SPI driver is not run;
+    // a future port must use OneWili SDFS and its recovery-aware wrapper.
+    sd_mounted = false;
+    p8_console_print("sd: unavailable (OneWili port needed)\\n");
     p8_console_draw(); gfx_flip();
 
     printf("DVI: 640x480 output started\n");
 
-    // Init audio (codec + I2S + DMA)
-    if (audio_init()) {
-        printf("Audio: I2S + DAC ready\n");
-        p8_console_print("audio: ready\n");
-    } else {
-        printf("Audio: init failed\n");
-        p8_console_print("audio: failed\n");
-    }
+    // Do not touch the Fruit Jam codec pins on FreeWili 2. Audio remains disabled
+    // until the synth is adapted to freewili2_bsp's NAU88C10 stream API.
+    p8_console_print("audio: unavailable (BSP port needed)\\n");
 
     // Init PICO-8 SFX/music engine (wavetables + pitch table)
     p8_sfx_init();
@@ -878,6 +848,7 @@ int main() {
     // and PIO-USB full-speed enumeration is slower than native USB.
     // Poll for up to 3 seconds, exit early once a device is detected.
     for (int i = 0; i < 300; i++) {
+        fw2_app_recovery_task();
         tuh_task();
         sleep_ms(10);
         // Exit early once any HID or XInput device is mounted
@@ -903,7 +874,7 @@ int main() {
     lua_State *L = lua_newstate(lua_psram_alloc, NULL);
     if (!L) {
         printf("ERROR: Failed to create Lua state\n");
-        while (true) tight_loop_contents();
+        while (true) { fw2_app_recovery_task(); tight_loop_contents(); }
     }
     luaL_openlibs(L);
 
@@ -987,10 +958,12 @@ int main() {
     };
 
     while (true) {
+        fw2_app_recovery_task();
         printf("> ");
 
         pos = 0;
         while (pos < LINE_BUF_SIZE - 1) {
+            fw2_app_recovery_task();
             // Poll USB host while waiting for serial input
             tuh_task();
 

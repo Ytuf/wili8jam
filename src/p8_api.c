@@ -1706,7 +1706,7 @@ static int p8_memset(lua_State *L) {
 static void cartdata_save(void) {
     if (!p8_cartdata_open) return;
     static char cd_path[128];
-    snprintf(cd_path, sizeof(cd_path), "/cartdata/%s.dat", p8_cartdata_id);
+    snprintf(cd_path, sizeof(cd_path), "/appdata/wili8jam/cartdata/%s.dat", p8_cartdata_id);
     static FIL cd_fil;  // static to avoid ~600 bytes on stack
     if (f_open(&cd_fil, cd_path, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
         UINT bw;
@@ -1722,7 +1722,7 @@ static int p8_cartdata_fn(lua_State *L) {
 
     // Try to load existing data
     char path[128];
-    snprintf(path, sizeof(path), "/cartdata/%s.dat", id);
+    snprintf(path, sizeof(path), "/appdata/wili8jam/cartdata/%s.dat", id);
     FIL fil;
     if (f_open(&fil, path, FA_READ) == FR_OK) {
         UINT br;
@@ -1730,7 +1730,9 @@ static int p8_cartdata_fn(lua_State *L) {
         f_close(&fil);
     } else {
         // Ensure directory exists
-        f_mkdir("/cartdata");
+        f_mkdir("/appdata");
+        f_mkdir("/appdata/wili8jam");
+        f_mkdir("/appdata/wili8jam/cartdata");
     }
     p8_cartdata_open = true;
     lua_pushboolean(L, 1);

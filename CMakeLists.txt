@@ -5,16 +5,17 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(PICO_PLATFORM rp2350)
-set(PICO_BOARD adafruit_fruit_jam CACHE STRING "Board type")
+set(PICO_BOARD freewili2 CACHE STRING "Board type")
+list(APPEND PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/wilibsp/bsp/boards)
 
 if(WIN32)
     set(USERHOME $ENV{USERPROFILE})
 else()
     set(USERHOME $ENV{HOME})
 endif()
-set(sdkVersion 2.2.0)
+set(sdkVersion 2.3.0)
 set(toolchainVersion 14_2_Rel1)
-set(picotoolVersion 2.2.0)
+set(picotoolVersion 2.3.0)
 set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
 if (EXISTS ${picoVscode})
     include(${picoVscode})
@@ -27,7 +28,9 @@ include(pico_sdk_import.cmake)
 
 project(wili8jam C CXX ASM)
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 pico_sdk_init()
+add_subdirectory(wilibsp/bsp)
 
 # --- Lua 5.4.7 static library ---
 set(LUA_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lua-5.4.7/src)
@@ -79,6 +82,7 @@ add_subdirectory(usb-host)
 # --- Main executable ---
 add_executable(wili8jam
     src/main.cpp
+    src/newlib_stubs.c
     src/sdcard.c
     src/dvi.c
     src/gfx.c
@@ -111,6 +115,7 @@ target_link_libraries(wili8jam PRIVATE
     tlsf
     fatfs
     fwUSBHost
+    freewili2_bsp
     pico_stdlib
     hardware_pio
     hardware_spi
@@ -128,4 +133,8 @@ target_compile_definitions(wili8jam PRIVATE PICO_STACK_SIZE=0x1000)
 pico_enable_stdio_usb(wili8jam 1)
 pico_enable_stdio_uart(wili8jam 0)
 
-pico_add_extra_outputs(wili8jam)
+fw2_psram_app(wili8jam
+    VERSION 001
+    DESCRIPTION "PICO-8 Lua console and DVI runtime"
+    REPOSITORY "https://github.com/evaderkrub/wili8jam"
+)

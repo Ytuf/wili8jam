@@ -1,8 +1,10 @@
 # wili8jam
 
-A PICO-8-compatible fantasy console for the [Adafruit Fruit Jam](https://www.adafruit.com/product/6313) (RP2350B).
+A PICO-8-compatible fantasy console packaged as a loadable FreeWili 2 DISPLAY app.
 
-Runs PICO-8 `.p8` and `.p8.png` cartridges from an SD card with DVI video output, I2S audio, and USB keyboard/mouse/gamepad input. Includes an interactive Lua REPL and on-device code editor.
+This migration builds a contract-valid PSRAM UF2. The inherited DVI renderer compiles for the FreeWili 2 HSTX pinout, but the Fruit Jam audio, direct-SD, and PIO-USB hardware paths have not yet been ported or verified on FreeWili 2 hardware. Do not treat a successful build as peripheral verification.
+
+Hold HOME for five seconds to return to the DISPLAY recovery loader. Run `info` in the on-device console for the app version and source repository.
 
 ## Features
 
@@ -19,39 +21,25 @@ Runs PICO-8 `.p8` and `.p8.png` cartridges from an SD card with DVI video output
 
 ## Hardware
 
-| | |
-|-|-|
-| **Board** | Adafruit Fruit Jam (RP2350B) |
-| **CPU** | Dual ARM Cortex-M33 @ 252 MHz |
-| **RAM** | 520 KB SRAM + 8 MB PSRAM |
-| **Storage** | microSD (FAT32) |
-| **Display** | DVI via HSTX (640x480@60Hz) |
-| **Audio** | I2S to TLV320DAC3100 DAC |
-| **Input** | USB-A host port (keyboard, mouse, gamepad) |
-| **Serial** | USB-C (CDC terminal) |
+Target: FreeWili 2 DISPLAY CPU (RP2350B), built as a PSRAM-resident FW2App. See `wilibsp/AGENTS.md` for the authoritative board and app contract.
 
 ## Building
 
 ### Prerequisites
 
-- [Pico SDK 2.2.0](https://github.com/raspberrypi/pico-sdk) (required for Fruit Jam board definition)
-- ARM GCC toolchain (14.2.1 or later)
-- CMake 3.30+
-- Make (or another CMake-supported generator)
+- Pico SDK 2.3.0
+- ARM GNU toolchain 14_2_Rel1
+- CMake and Ninja
+- Initialized submodules: `git submodule update --init --recursive`
 
 ### Build
 
 ```bash
-cd build
-cmake .. -G "Unix Makefiles"
-make -j8
+cmake -S . -B build -G Ninja
+cmake --build build --target wili8jam
 ```
 
-Output: `build/wili8jam.uf2` (~950 KB)
-
-### Flash
-
-Hold BOOTSEL on the Fruit Jam while connecting USB-C, then copy `wili8jam.uf2` to the mounted drive.
+The build validates `build/wili8jam.uf2` as a PSRAM-only FW2App image. Install it with the BSP launcher: `wilibsp/tools/fw install-app build/wili8jam.uf2`. Every published release must attach this validated UF2 as a downloadable release artifact.
 
 ### Tests
 

@@ -53,6 +53,7 @@ static int dma_ch_a, dma_ch_b;
 
 // When true, ISR fills buffers with silence instead of mixing (avoids PSRAM access)
 static volatile bool audio_paused = false;
+static bool audio_initialized = false;
 
 // --- Codec I2C helpers ---
 
@@ -349,6 +350,7 @@ static void build_sine_table(void) {
 }
 
 bool audio_init(void) {
+    audio_initialized = true;
     build_sine_table();
     memset(channels, 0, sizeof(channels));
     for (int i = 0; i < AUDIO_NUM_CHANNELS; i++) {
@@ -384,6 +386,7 @@ void audio_stop(int channel) {
 }
 
 void audio_volume(int level) {
+    if (!audio_initialized) return;
     if (level < 0) level = 0;
     if (level > 7) level = 7;
 
