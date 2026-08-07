@@ -2,9 +2,7 @@
 
 A PICO-8-compatible fantasy console packaged as a loadable FreeWili 2 DISPLAY app.
 
-This migration builds a contract-valid PSRAM UF2. The inherited DVI renderer compiles for the FreeWili 2 HSTX pinout, but the Fruit Jam audio, direct-SD, and PIO-USB hardware paths have not yet been ported or verified on FreeWili 2 hardware. Do not treat a successful build as peripheral verification.
-
-Hold HOME for five seconds to return to the DISPLAY recovery loader. Run `info` in the on-device console for the app version and source repository.
+The app runs from PSRAM, renders over DVI, plays through the capped FreeWili 2 audio codec path, and accesses MAIN-owned SD storage through recovery-aware OneWili SDFS. Hold HOME for five seconds to return to the DISPLAY recovery loader. Run info for the app version and repository.
 
 ## Features
 
@@ -13,11 +11,11 @@ Hold HOME for five seconds to return to the DISPLAY recovery loader. Run `info` 
 - **8-channel audio** -- 4-channel SFX engine (8 waveforms, 7 effects) + music pattern sequencer + 4-channel basic synth
 - **PICO-8 syntax preprocessor** -- `!=`, `+=`, short-form `if`/`while`, `?print`, `//` comments, P8SCII glyphs, `0b` literals
 - **128x128 DVI display** -- 4-bit indexed framebuffer with PICO-8 16-color palette, 3x scaled to 384x384
-- **Interactive Lua 5.4 REPL** -- serial terminal over USB CDC and on-screen console
+- **Interactive Lua 5.4 REPL** -- DVI console with USB-host keyboard or FreeWili chord entry
 - **On-device code editor** -- syntax highlighting, copy/paste, load/save `.p8` files
 - **Cart picker UI** -- browse and launch cartridges from the SD card
-- **USB input** -- keyboard, mouse, and gamepad via PIO-USB host (simultaneous with USB serial)
-- **8 MB PSRAM heap** -- Lua allocations backed by TLSF allocator on external PSRAM
+- **USB and board input** -- PIO-USB keyboard, mouse, HID/XInput gamepads, FreeWili chord text entry, and direct six-button controls
+- **6 MB PSRAM heap** -- linker-owned TLSF storage that cannot alias the loadable image
 
 ## Hardware
 
@@ -52,18 +50,9 @@ gcc -o test_preprocess src/test_p8_preprocess.c src/p8_preprocess.c tlsf/tlsf.c 
 
 ## Usage
 
-### Serial REPL
+### On-device REPL
 
-Connect to the USB-C serial port (115200 baud). You get a Lua 5.4 REPL with PICO-8 API functions available as globals.
-
-```
-> print("hello")
-hello
-> circfill(64,64,20,8)
-> flip()
-```
-
-Built-in commands: `ls`, `cd`, `load`, `run`, `edit`, `save`, `cls`, `help`, `info`, `reboot`
+Use the FreeWili two-press chord keyboard on the DVI console. Built-in commands: ls, cd, load, run, edit, save, cls, help, info, reboot.
 
 ### Running Cartridges
 
@@ -73,7 +62,7 @@ Place `.p8` or `.p8.png` files on the SD card root.
 - **REPL:** Type `load game` then `run`, or `load("game.p8")`
 - **Cart picker:** Boot without `main.p8` on the SD to get a file browser
 
-Press **ESC** to exit a running cartridge back to the REPL. Type `resume` to re-enter without resetting.
+Press **HOME briefly** to exit a running cartridge back to the REPL; continuing to hold HOME for five seconds invokes app recovery. Type `resume` to re-enter without resetting.
 
 ### Code Editor
 
@@ -85,6 +74,13 @@ Press **ESC** from the REPL to enter the editor. Press **ESC** again to return t
 - Save from the REPL with `save filename` (`.p8` extension added automatically)
 - If a cart is loaded, `edit` opens its code automatically
 
+## FreeWili 2 interface notes
+
+- SD requires the MAIN CPU to run stock firmware with the OneWili/SDFS server. Paths are absolute and limited to 128 characters; at most two files can be open concurrently.
+- The audio rail is zone 3 in the authoritative BSP power map. The app requests and maintains it before codec access. Speaker gain remains at the BSP's 0.5 W-safe ceiling; silence stops DMA and puts the codec output stage into low power. The BSP has no public continuous volume setter, so audio.volume(0) mutes/powers down and nonzero values retain the fixed safe ceiling.
+- PIO-USB input uses GPIO42/43 and supports keyboard, mouse, HID gamepads, and XInput controllers. If its switched power rail cannot be confirmed, the app leaves the USB controller untouched and continues with the FreeWili button/chord controls. This newly harvested BSP path builds offline but has not yet been verified on FreeWili 2 hardware.
+- DVI uses the application's PICO-8 scaler on the FreeWili 2 HSTX pin mapping. This software port was built and checked offline; no new hardware verification is claimed.
+
 ## Source Files
 
 | File | Purpose |
@@ -92,10 +88,9 @@ Press **ESC** from the REPL to enter the editor. Press **ESC** again to return t
 | `src/main.cpp` | Entry point, init sequence, REPL loop, Lua library registration |
 | `src/dvi.c/h` | HSTX DVI driver: 640x480@60Hz timing, DMA command list, TMDS encoding |
 | `src/gfx.c/h` | 128x128 4-bit indexed framebuffer, drawing primitives, font rendering |
-| `src/audio.c/h` | I2S codec init (I2C), PIO program, DMA ISR, 4-channel basic synth |
-| `src/audio_i2s.pio` | PIO I2S transmitter program |
+| `src/audio.c/h` | BSP NAU88C10 mixer adapter, capped speaker output, and idle low-power control |
 | `src/input.c/h` | HID keyboard state, PICO-8 button mapping, gamepad parsing, mouse |
-| `src/sdcard.c/h` | SD card SPI driver |
+| `src/fw2_fs.c/h` | FatFS-shaped compatibility layer over recovery-aware OneWili SDFS |
 | `src/psram.h` | PSRAM initialization via QMI hardware registers |
 | `src/p8_api.c/h` | Full PICO-8 API: 100+ Lua globals |
 | `src/p8_cart.c/h` | .p8 file parser, game loop runner, cart picker UI |

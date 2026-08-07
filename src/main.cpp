@@ -1,5 +1,4 @@
 #include <cstdio>
-#include <cstdarg>
 #include <cstring>
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
@@ -8,18 +7,16 @@
 #include "pico/platform/sections.h"
 extern "C" {
 #include "fw2.h"
+#include "platform/diag.h"
 }
-#include "pio_usb.h"
-#include "usb-host/fwUSBHost.h"
 
 extern "C" {
-#include "tusb.h"
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
 #include "tlsf/tlsf.h"
 #include "fatfs/ff.h"
-#include "sdcard.h"
+#include "fw2_fs.h"
 #include "gfx.h"
 #include "dvi.h"
 #include "input.h"
@@ -30,70 +27,14 @@ extern "C" {
 #include "p8_cart.h"
 #include "p8_console.h"
 #include "p8_editor.h"
+#include "app_log.h"
 }
-
-// TinyUSB debug printf (declared in tusb_config.h)
-extern "C" int cdc_debug_printf(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    int ret = vprintf(fmt, args);
-    va_end(args);
-    return ret;
-}
-
-// TinyUSB debug ring buffer — captures debug output, dumped via 'info'
-static constexpr int TUSB_DBG_BUF_SIZE = 4096;
-static char tusb_dbg_buf[TUSB_DBG_BUF_SIZE];
-static int tusb_dbg_pos = 0;
-static bool tusb_dbg_wrapped = false;
-
-extern "C" int tusb_debug_buffered_printf(const char* fmt, ...) {
-    char tmp[256];
-    va_list args;
-    va_start(args, fmt);
-    int n = vsnprintf(tmp, sizeof(tmp), fmt, args);
-    va_end(args);
-    if (n <= 0) return n;
-    if (n > (int)sizeof(tmp) - 1) n = sizeof(tmp) - 1;
-    // Filter out device-side (USBD/CDC) noise — only keep host-side logs
-    if (strncmp(tmp, "USBD", 4) == 0 || strncmp(tmp, "  CDC", 5) == 0 ||
-        strncmp(tmp, "  Queue", 7) == 0)
-        return n;
-    for (int i = 0; i < n; i++) {
-        tusb_dbg_buf[tusb_dbg_pos] = tmp[i];
-        tusb_dbg_pos = (tusb_dbg_pos + 1) % TUSB_DBG_BUF_SIZE;
-        if (tusb_dbg_pos == 0) tusb_dbg_wrapped = true;
-    }
-    return n;
-}
-
-static void tusb_dbg_dump() {
-    if (!tusb_dbg_wrapped && tusb_dbg_pos == 0) {
-        printf("(no tusb debug output)\n");
-        return;
-    }
-    printf("--- tusb debug log ---\n");
-    if (tusb_dbg_wrapped) {
-        // Print from current position to end, then start to current position
-        fwrite(tusb_dbg_buf + tusb_dbg_pos, 1, TUSB_DBG_BUF_SIZE - tusb_dbg_pos, stdout);
-        fwrite(tusb_dbg_buf, 1, tusb_dbg_pos, stdout);
-    } else {
-        fwrite(tusb_dbg_buf, 1, tusb_dbg_pos, stdout);
-    }
-    printf("--- end tusb debug ---\n");
-}
-
-static void tusb_dbg_clear() {
-    tusb_dbg_pos = 0;
-    tusb_dbg_wrapped = false;
-}
-
-extern fwUSBHost obUSBHost;
 
 static tlsf_t psram_tlsf;
 static size_t psram_total_size;
 static FATFS fatfs;
 static bool sd_mounted = false;
+static bool usb_ready = false;
 
 static void* lua_psram_alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
     (void)ud; (void)osize;
@@ -439,7 +380,7 @@ static int luaopen_fs(lua_State *L) {
 
 // help command: PICO-8-style help with per-command detail
 static void help_print(const char *s) {
-    printf("%s\n", s);
+    APP_LOG("%s\n", s);
     p8_console_printf("%s\n", s);
 }
 
@@ -494,7 +435,7 @@ static int lua_help(lua_State *L) {
             }
         }
         p8_console_printf("unknown command: %s\n", cmd);
-        printf("unknown command: %s\n", cmd);
+        APP_LOG("unknown command: %s\n", cmd);
         p8_console_draw();
         gfx_flip();
         return 0;
@@ -529,43 +470,18 @@ static int lua_info(lua_State *L) {
     unsigned tk = (unsigned)(psram_total_size / 1024);
     unsigned mhz = (unsigned)(clock_get_hz(clk_sys) / 1000000);
     const char *fmt = "wili8jam v001 / freewili2\ngithub.com/evaderkrub/wili8jam\nrp2350b @ %u mhz\npsram: %uk free / %uk\n";
-    printf(fmt, mhz, fk, tk);
+    APP_LOG(fmt, mhz, fk, tk);
     p8_console_printf(fmt, mhz, fk, tk);
 
-    // USB HID device info
-    auto &hid = obUSBHost.m_obHID;
-    printf("usb: kbd=%d mouse=%d ctrl=%d xinput=%d generic=%d\n",
-        hid.getKeyboardCount(), hid.getMouseCount(),
-        hid.getControllerCount(), obUSBHost.m_obXInput.getMountedCount(),
-        hid.getGenericCount());
-    p8_console_printf("usb: kbd=%d mouse=%d ctrl=%d xinput=%d generic=%d\n",
-        hid.getKeyboardCount(), hid.getMouseCount(),
-        hid.getControllerCount(), obUSBHost.m_obXInput.getMountedCount(),
-        hid.getGenericCount());
-
-    // Show mounted HID interface details
-    for (uint8_t addr = 1; addr <= CFG_TUH_DEVICE_MAX; addr++) {
-        if (!tuh_mounted(addr)) continue;
-        uint8_t itf_count = tuh_hid_itf_get_count(addr);
-        for (uint8_t itf = 0; itf < itf_count; itf++) {
-            uint8_t proto = tuh_hid_interface_protocol(addr, itf);
-            printf("  dev %d itf %d: proto=%d (%s)\n", addr, itf, proto,
-                proto == 1 ? "keyboard" : proto == 2 ? "mouse" : "none/other");
-        }
+    if (usb_ready) {
+        p8_console_printf("usb: kbd=%u mouse=%u hid=%u xinput=%u\n",
+                          fw2_pio_usb_host_keyboard_count(),
+                          fw2_pio_usb_host_mouse_count(),
+                          fw2_pio_usb_host_controller_count(),
+                          fw2_pio_usb_host_xinput_count());
+    } else {
+        p8_console_print("usb: unavailable; board controls active\n");
     }
-
-    // PIO-USB root port diagnostic
-    {
-        extern root_port_t pio_usb_root_port[];
-        root_port_t *root = &pio_usb_root_port[0];
-        printf("pio-usb: init=%d connected=%d fullspeed=%d suspended=%d event=%d\n",
-            root->initialized, root->connected, root->is_fullspeed,
-            root->suspended, root->event);
-    }
-
-    // Dump TinyUSB debug ring buffer
-    tusb_dbg_dump();
-    tusb_dbg_clear();
 
     p8_console_draw();
     gfx_flip();
@@ -609,7 +525,7 @@ static int lua_cd(lua_State *L) {
     // Print new cwd
     char cwd[256];
     if (f_getcwd(cwd, sizeof(cwd)) == FR_OK) {
-        printf("%s\n", cwd);
+        APP_LOG("%s\n", cwd);
         p8_console_printf("%s\n", cwd);
     }
     p8_console_draw();
@@ -624,16 +540,16 @@ static int lua_ls(lua_State *L) {
     FILINFO fno;
 
     if (f_opendir(&dir, path) != FR_OK) {
-        printf("cannot open: %s\n", path);
+        APP_LOG("cannot open: %s\n", path);
         return 0;
     }
 
     while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != '\0') {
         if (fno.fattrib & AM_DIR) {
-            printf("  [dir] %s\n", fno.fname);
+            APP_LOG("  [dir] %s\n", fno.fname);
             p8_console_printf(" [dir] %s\n", fno.fname);
         } else {
-            printf("  %s (%u)\n", fno.fname, (unsigned)fno.fsize);
+            APP_LOG("  %s (%u)\n", fno.fname, (unsigned)fno.fsize);
             p8_console_printf(" %s (%u)\n", fno.fname, (unsigned)fno.fsize);
         }
     }
@@ -696,12 +612,12 @@ static bool try_autorun(lua_State *L) {
     if (f_stat("/main.lua", &fno) != FR_OK)
         return false;
 
-    printf("Running /main.lua...\n");
+    APP_LOG("Running /main.lua...\n");
 
     size_t sz;
     char *buf = load_and_preprocess("/main.lua", &sz);
     if (!buf) {
-        printf("ERROR: could not read /main.lua\n");
+        APP_LOG("ERROR: could not read /main.lua\n");
         return true;
     }
 
@@ -710,7 +626,7 @@ static bool try_autorun(lua_State *L) {
 
     if (status != LUA_OK) {
         const char *err = lua_tostring(L, -1);
-        if (err) printf("ERROR: %s\n", err);
+        if (err) APP_LOG("ERROR: %s\n", err);
         lua_pop(L, 1);
         return true;
     }
@@ -718,7 +634,7 @@ static bool try_autorun(lua_State *L) {
     status = lua_pcall(L, 0, 0, 0);
     if (status != LUA_OK) {
         const char *err = lua_tostring(L, -1);
-        if (err) printf("ERROR: %s\n", err);
+        if (err) APP_LOG("ERROR: %s\n", err);
         lua_pop(L, 1);
     }
     return true;
@@ -731,90 +647,70 @@ int main() {
     // fw2_psram_app's SRAM bootstrap has already brought up the board and PSRAM.
     fw2_app_recovery_init();
 
-    // PIO-USB host power and pins are Fruit Jam-specific; leave the host disabled
-    // until a FreeWili 2 hardware port is verified.
+    // fw2_psram_app already initialized the board; diagnostics use BSP RTT.
 
-    // tusb_init() called inside here inits device CDC (port 0) + PIO-USB host (port 1)
-    stdio_init_all();
-
-    // Start DVI display immediately so screen is live during boot
+    // Start DVI before switched-rail waits so boot progress is visible.
     gfx_init();
     dvi_init(gfx_get_dvi_buffer());
     p8_console_init();
-    p8_console_print("wili8jam 0.10\n");
+    p8_console_print("wili8jam v001\nusb input: initializing\n");
     p8_console_draw();
     gfx_flip();
 
-    // Register keyboard callback for input state tracking
-    obUSBHost.m_obHID.getKeyboard().setKeyCallback(input_key_callback);
-
-    // Register modifier key polling so Ctrl/Shift/Alt state is synced each frame
-    input_set_modifier_poll([]() -> uint8_t {
-        return obUSBHost.m_obHID.getKeyboard().getModifiers();
-    });
-
-    // Register mouse polling function — always update when mounted
-    // (getDeltas resets accumulators, so we must always pass them through)
-    input_set_mouse_poll([]() {
-        auto &mouse = obUSBHost.m_obHID.getMouse();
-        if (mouse.isAnyMounted()) {
+    usb_ready = fw2_pio_usb_host_init();
+    input_set_usb_host_ready(usb_ready);
+    if (usb_ready) {
+        fw2_pio_usb_host_set_key_callback(input_key_callback);
+        input_set_modifier_poll([]() -> uint8_t {
+            return fw2_pio_usb_host_modifiers();
+        });
+        input_set_mouse_poll([]() {
             int32_t dx, dy, wheel;
-            mouse.getDeltas(&dx, &dy, &wheel);
-            input_mouse_update(dx, dy, wheel, mouse.getButtons());
-        }
-    });
-
-    // Register controller callback — player assigned by mount order
-    // Sony controllers (DualSense/DualShock) use a different report format
-    obUSBHost.m_obHID.getController().setReportCallback(
-        [](uint8_t dev_addr, uint8_t instance, uint8_t const *report, uint16_t len) {
-            auto &ctrl = obUSBHost.m_obHID.getController();
-            int player = ctrl.getPlayerForDevice(dev_addr, instance);
-            if (player > 1) player = 1; // PICO-8 supports 2 players max
-            // Check VID to route Sony controllers to dedicated parser
-            uint16_t vid = 0, pid = 0;
-            tuh_vid_pid_get(dev_addr, &vid, &pid);
-            if (vid == SONY_VID)
-                input_dualsense_report(report, len, player, pid);
-            else
-                input_gamepad_report(report, len, player);
+            uint8_t buttons;
+            if (fw2_pio_usb_host_mouse(&dx, &dy, &wheel, &buttons))
+                input_mouse_update(dx, dy, wheel, buttons);
         });
+        fw2_pio_usb_host_set_controller_callback(
+            [](uint8_t dev, uint8_t inst, const uint8_t *report, uint16_t len,
+               uint16_t vid, uint16_t pid, int player) {
+                (void)dev; (void)inst;
+                if (player > 1) player = 1;
+                if (vid == 0x054c)
+                    input_dualsense_report(report, len, player, pid);
+                else
+                    input_gamepad_report(report, len, player);
+            });
+        fw2_pio_usb_host_set_xinput_callback(
+            [](const fw2_usb_xinput_pad_t *pad, int player) {
+                if (player > 1) player = 1;
+                input_xinput_update(pad->buttons, pad->lx, pad->ly, player);
+            });
+    } else {
+        DIAG("wili8jam: PIO-USB host unavailable; board controls remain active\n");
+    }
+    p8_console_print(usb_ready ? "usb input: ready\n" : "usb input: unavailable\n");
+    p8_console_draw();
+    gfx_flip();
 
-    // NOTE: Generic HID devices are NOT routed to input_gamepad_report.
-    // Many keyboards expose a secondary HID interface (consumer control)
-    // with protocol=NONE that gets classified as "generic". Feeding those
-    // reports through the gamepad parser causes phantom directional input
-    // (e.g., constant left) because zero-filled reports are misinterpreted
-    // as axis values. Only properly-detected controllers (via isController)
-    // should produce gamepad input.
-
-    // Register XInput (Xbox) controller callback
-    obUSBHost.m_obXInput.setReportCallback(
-        [](uint8_t dev_addr, uint8_t instance, xinput_gamepad_t const *pad) {
-            int player = obUSBHost.m_obXInput.getPlayerForDevice(dev_addr, instance);
-            if (player > 1) player = 1;
-            input_xinput_update(pad->wButtons, pad->sThumbLX, pad->sThumbLY, player);
-        });
-
-    printf("\n");
-    printf("========================================\n");
-    printf("  wili8jam — Lua 5.4.7 on FreeWili 2\n");
-    printf("  RP2350B @ %u MHz | USB Serial REPL\n", (unsigned)(clock_get_hz(clk_sys) / 1000000));
-    printf("========================================\n");
+    APP_LOG("\n");
+    APP_LOG("========================================\n");
+    APP_LOG("  wili8jam — Lua 5.4.7 on FreeWili 2\n");
+    APP_LOG("  RP2350B @ %u MHz | DVI REPL\n", (unsigned)(clock_get_hz(clk_sys) / 1000000));
+    APP_LOG("========================================\n");
 
     // The linker owns PSRAM; the allocator uses an explicit non-aliasing section.
     psram_total_size = sizeof(psram_heap);
-    printf("PSRAM: %u KB detected\n", (unsigned)(psram_total_size / 1024));
+    APP_LOG("PSRAM: %u KB detected\n", (unsigned)(psram_total_size / 1024));
     p8_console_printf("psram: %u kb\n", (unsigned)(psram_total_size / 1024));
     p8_console_draw(); gfx_flip();
 
     // Init TLSF allocator on PSRAM
     psram_tlsf = tlsf_create_with_pool(psram_heap, psram_total_size);
     if (!psram_tlsf) {
-        printf("ERROR: Failed to init TLSF on PSRAM\n");
+        APP_LOG("ERROR: Failed to init TLSF on PSRAM\n");
         while (true) { fw2_app_recovery_task(); tight_loop_contents(); }
     }
-    printf("TLSF heap ready.\n");
+    APP_LOG("TLSF heap ready.\n");
 
     // Init PICO-8 preprocessor with PSRAM allocator
     p8_preprocess_init(psram_tlsf);
@@ -828,52 +724,27 @@ int main() {
     // Init editor
     p8_editor_init(psram_tlsf);
 
-    // The DISPLAY CPU has no direct SD path. The inherited SPI driver is not run;
-    // a future port must use OneWili SDFS and its recovery-aware wrapper.
-    sd_mounted = false;
-    p8_console_print("sd: unavailable (OneWili port needed)\\n");
+    // SD is owned by MAIN and reached through recovery-aware OneWili SDFS.
+    sd_mounted = fw2_fs_init();
+    p8_console_print(sd_mounted ? "sd: OneWili ready\n" : "sd: MAIN link unavailable\n");
     p8_console_draw(); gfx_flip();
 
-    printf("DVI: 640x480 output started\n");
+    APP_LOG("DVI: 640x480 output started\n");
 
-    // Do not touch the Fruit Jam codec pins on FreeWili 2. Audio remains disabled
-    // until the synth is adapted to freewili2_bsp's NAU88C10 stream API.
-    p8_console_print("audio: unavailable (BSP port needed)\\n");
-
-    // Init PICO-8 SFX/music engine (wavetables + pitch table)
+    // Init PICO-8 SFX/music engine before starting the BSP mixer.
     p8_sfx_init();
+    bool audio_ok = audio_init();
+    p8_console_print(audio_ok ? "audio: FreeWili BSP ready\n" : "audio: unavailable\n");
 
-    // Poll USB host to enumerate devices already plugged in at boot.
-    // Xbox One controllers need multiple round-trips for power-on + init handshake,
-    // and PIO-USB full-speed enumeration is slower than native USB.
-    // Poll for up to 3 seconds, exit early once a device is detected.
-    for (int i = 0; i < 300; i++) {
-        fw2_app_recovery_task();
-        tuh_task();
-        sleep_ms(10);
-        // Exit early once any HID or XInput device is mounted
-        if (i > 50 && (obUSBHost.m_obHID.isKeyboardMounted() ||
-                       obUSBHost.m_obHID.isControllerMounted() ||
-                       obUSBHost.m_obXInput.isAnyMounted() ||
-                       obUSBHost.m_obHID.getGenericCount() > 0)) {
-            printf("[USB] Device detected after %d ms\n", i * 10);
-            break;
-        }
-    }
-    printf("[USB] Boot scan complete: kbd=%d ctrl=%d xinput=%d generic=%d\n",
-        obUSBHost.m_obHID.getKeyboardCount(),
-        obUSBHost.m_obHID.getControllerCount(),
-        obUSBHost.m_obXInput.getMountedCount(),
-        obUSBHost.m_obHID.getGenericCount());
-
-    printf("Ready. Type Lua code, press Enter.\n");
+    // Init PICO-8 SFX/music engine (already initialized above)
+    APP_LOG("Ready. Use the FreeWili chord keyboard and press Enter.\n");
     p8_console_print("ready.\n");
     p8_console_draw();
     gfx_flip();
 
     lua_State *L = lua_newstate(lua_psram_alloc, NULL);
     if (!L) {
-        printf("ERROR: Failed to create Lua state\n");
+        APP_LOG("ERROR: Failed to create Lua state\n");
         while (true) { fw2_app_recovery_task(); tight_loop_contents(); }
     }
     luaL_openlibs(L);
@@ -959,13 +830,11 @@ int main() {
 
     while (true) {
         fw2_app_recovery_task();
-        printf("> ");
+        APP_LOG("> ");
 
         pos = 0;
         while (pos < LINE_BUF_SIZE - 1) {
             fw2_app_recovery_task();
-            // Poll USB host while waiting for serial input
-            tuh_task();
 
             // Redraw console on screen periodically
             repl_redraw();
@@ -976,31 +845,29 @@ int main() {
                 input_flush();
                 p8_editor_enter();
                 // Wait for ESC release (debounce from editor toggle)
-                while (input_key(0x29)) { tuh_task(); input_update(); sleep_ms(10); }
+                while (input_key(0x29)) { input_update(); sleep_ms(10); }
                 skip_console_redraw = false;
                 p8_console_draw();
                 gfx_flip();
-                printf("> ");
+                APP_LOG("> ");
                 continue;
             }
 
-            // Read from serial OR USB keyboard
-            int c = getchar_timeout_us(0);
-            if (c == PICO_ERROR_TIMEOUT)
-                c = input_getchar();
+            // Read from the FreeWili chord keyboard
+            int c = input_getchar();
             if (c < 0) {
                 sleep_ms(16);
                 continue;
             }
             if (c == '\r' || c == '\n') {
-                printf("\n");
+                APP_LOG("\n");
                 skip_console_redraw = false;
                 break;
             }
             if (c == '\b' || c == 127) {
                 if (pos > 0) {
                     pos--;
-                    printf("\b \b");
+                    APP_LOG("\b \b");
                 }
                 continue;
             }
@@ -1146,7 +1013,7 @@ int main() {
         if (status != LUA_OK) {
             const char *err = lua_tostring(L, -1);
             if (err) {
-                printf("ERROR: %s\n", err);
+                APP_LOG("ERROR: %s\n", err);
                 p8_console_printf("error: %s\n", err);
             }
             lua_pop(L, 1);

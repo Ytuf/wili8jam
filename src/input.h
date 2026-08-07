@@ -13,7 +13,13 @@ extern "C" {
 // Key event callback (matches KeyEventCallback signature in fwUSBHostHIDKeyboard.h)
 void input_key_callback(uint8_t keycode, char ascii, bool pressed, uint8_t modifiers);
 
-// Call once per frame to update btnp edge detection and auto-repeat
+// Select direct PICO-8 controls (game) or chord text entry (REPL/editor).
+void input_set_game_mode(bool enabled);
+
+// Enable PIO-USB polling only after fw2_pio_usb_host_init() succeeds.
+void input_set_usb_host_ready(bool ready);
+
+// Call once per frame to update board input, btnp, and audio/power servicing
 void input_update(void);
 
 // PICO-8 btn(i, player): true if button i is currently held

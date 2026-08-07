@@ -1,5 +1,5 @@
 /*
- * DVI output driver for Adafruit Fruit Jam (RP2350B) via HSTX.
+ * DVI output driver for FreeWili 2 (RP2350B) via HSTX.
  * Adapted from MicroPython/Adafruit picodvi (MIT License).
  *
  * Outputs 640x480@60Hz DVI from a 128x128 RGB565 framebuffer.
@@ -136,7 +136,7 @@ static void __not_in_flash_func(dma_irq_handler)(void) {
     ch->al3_read_addr_trig = (uintptr_t)dma_commands;
 }
 
-// Fruit Jam HSTX pins
+// FreeWili 2 HSTX pins
 #define HSTX_FIRST_PIN 12
 #define PIN_CKP  13
 #define PIN_D2P  19  // Red
@@ -267,7 +267,7 @@ void dvi_init(uint16_t *framebuffer) {
     }
 
     // TMDS lanes: L0=Blue, L1=Green, L2=Red
-    // Fruit Jam: D0P(pin15)→DVI Blue, D1P(pin17)→DVI Green, D2P(pin19)→DVI Red
+    // FreeWili 2: D0P(pin15)→Blue, D1P(pin17)→Green, D2P(pin19)→Red
     const int pinout[] = { PIN_D0P, PIN_D1P, PIN_D2P };
     for (uint lane = 0; lane < 3; ++lane) {
         int bit = pinout[lane] - HSTX_FIRST_PIN;

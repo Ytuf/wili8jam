@@ -6,6 +6,7 @@
  */
 
 #include "p8_api.h"
+#include "app_log.h"
 #include "p8_cart.h"
 #include "p8_console.h"
 #include "p8_sfx.h"
@@ -1083,13 +1084,13 @@ static int p8_stat(lua_State *L) {
 static int p8_printh(lua_State *L) {
     const char *s = luaL_tolstring(L, 1, NULL);
     lua_pop(L, 1);
-    if (s) printf("%s\n", s);
+    if (s) APP_LOG("%s\n", s);
     return 0;
 }
 
 static int p8_stop(lua_State *L) {
     const char *msg = luaL_optstring(L, 1, NULL);
-    if (msg) printf("%s\n", msg);
+    if (msg) APP_LOG("%s\n", msg);
     return luaL_error(L, "cart stopped");
 }
 
@@ -1146,7 +1147,7 @@ static int p8_extcmd(lua_State *L) {
     if (strcmp(cmd, "reset") == 0) {
         // Software reset — same as reboot REPL command
         // Can't easily reboot from here, just print
-        printf("extcmd(\"reset\"): use reboot command\n");
+        APP_LOG("extcmd(\"reset\"): use reboot command\n");
     }
     // screenshot, video, rec, label, etc. — silently ignore
     return 0;

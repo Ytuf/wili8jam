@@ -6,6 +6,7 @@
  */
 
 #include "p8_cart.h"
+#include "app_log.h"
 #include "p8_api.h"
 #include "p8_sfx.h"
 #include "p8_preprocess.h"
@@ -394,7 +395,7 @@ static bool call_global(lua_State *L, const char *name) {
     if (status != LUA_OK) {
         const char *err = lua_tostring(L, -1);
         if (err) {
-            printf("ERROR: %s\n", err);
+            APP_LOG("ERROR: %s\n", err);
             p8_console_printf("error: %s\n", err);
         }
         lua_pop(L, 1);
@@ -411,7 +412,7 @@ static void cart_gameloop_inner(lua_State *L) {
     uint32_t frame_us = use_60fps ? 16667 : 33333;
     p8_set_target_fps(use_60fps ? 60 : 30);
 
-    printf("Game loop: %s @ %dfps\n", update_fn, use_60fps ? 60 : 30);
+    APP_LOG("Game loop: %s @ %dfps\n", update_fn, use_60fps ? 60 : 30);
 
     // Tell p8_api that flip() shouldn't sleep (game loop handles timing)
     p8_set_gameloop_mode(true);
@@ -428,7 +429,7 @@ static void cart_gameloop_inner(lua_State *L) {
 
         // Check for ESC key to break out of game loop
         if (input_key(0x29)) { // HID_KEY_ESCAPE = 0x29
-            printf("ESC pressed, stopping cart\n");
+            APP_LOG("ESC pressed, stopping cart\n");
             break;
         }
 
@@ -458,6 +459,7 @@ static void cart_gameloop_inner(lua_State *L) {
             sleep_us(remaining);
     }
 
+    input_set_game_mode(false);
     p8_set_gameloop_mode(false);
 
     // Stop all audio (SFX + music) when exiting game loop
@@ -479,8 +481,9 @@ void p8_cart_gameloop(lua_State *L) {
     p8_set_gameloop_mode(true);
     p8_register_print(L);
     if (!call_global(L, "_init")) {
-        printf("Cart _init() failed, entering REPL\n");
-        p8_set_gameloop_mode(false);
+        APP_LOG("Cart _init() failed, entering REPL\n");
+        input_set_game_mode(false);
+    p8_set_gameloop_mode(false);
         return;
     }
     cart_gameloop_inner(L);
@@ -500,20 +503,20 @@ static char *cart_read_file(const char *path, size_t *out_size) {
     static FIL fil;  // static to avoid ~600 bytes on stack
     FRESULT fres = f_open(&fil, path, FA_READ);
     if (fres != FR_OK) {
-        printf("  f_open failed: %d\n", fres);
+        APP_LOG("  f_open failed: %d\n", fres);
         return NULL;
     }
 
     FSIZE_t fsize = f_size(&fil);
     if (fsize == 0) {
-        printf("  file is empty (0 bytes)\n");
+        APP_LOG("  file is empty (0 bytes)\n");
         f_close(&fil);
         return NULL;
     }
 
     char *buf = (char *)tlsf_malloc(cart_tlsf, (size_t)fsize + 1);
     if (!buf) {
-        printf("  malloc failed for %lu bytes\n", (unsigned long)fsize);
+        APP_LOG("  malloc failed for %u bytes\n", (unsigned)fsize);
         f_close(&fil);
         return NULL;
     }
@@ -523,8 +526,8 @@ static char *cart_read_file(const char *path, size_t *out_size) {
     f_close(&fil);
 
     if (res != FR_OK || br != (UINT)fsize) {
-        printf("  f_read failed: res=%d, got %u/%lu bytes\n",
-               res, (unsigned)br, (unsigned long)fsize);
+        APP_LOG("  f_read failed: res=%d, got %u/%u bytes\n",
+               res, (unsigned)br, (unsigned)fsize);
         tlsf_free(cart_tlsf, buf);
         return NULL;
     }
@@ -541,7 +544,7 @@ static bool is_p8png(const char *path) {
 
 int p8_cart_load(lua_State *L, const char *path) {
     (void)L;
-    printf("Loading cart: %s\n", path);
+    APP_LOG("Loading cart: %s\n", path);
 
     // Save current cart path
     snprintf(current_cart_path, sizeof(current_cart_path), "%s", path);
@@ -552,7 +555,7 @@ int p8_cart_load(lua_State *L, const char *path) {
     char *file_data = cart_read_file(path, &file_len);
     audio_resume();
     if (!file_data) {
-        printf("ERROR: cannot read %s\n", path);
+        APP_LOG("ERROR: cannot read %s\n", path);
         p8_console_printf("error: cannot read %s\n", path);
         p8_console_draw(); gfx_flip();
         return -1;
@@ -570,7 +573,7 @@ int p8_cart_load(lua_State *L, const char *path) {
     }
 
     if (!lua_code) {
-        printf("ERROR: no code in %s\n", path);
+        APP_LOG("ERROR: no code in %s\n", path);
         p8_console_printf("error: no code in %s\n", path);
         p8_console_draw(); gfx_flip();
         return -1;
@@ -583,7 +586,7 @@ int p8_cart_load(lua_State *L, const char *path) {
     if (!is_p8png(path))
         p8_editor_load(path);
 
-    printf("Loaded: %s\n", path);
+    APP_LOG("Loaded: %s\n", path);
     p8_console_printf("loaded %s\n", path);
     p8_console_draw(); gfx_flip();
 
@@ -591,7 +594,7 @@ int p8_cart_load(lua_State *L, const char *path) {
 }
 
 int p8_cart_run(lua_State *L, const char *path) {
-    printf("Loading cart: %s\n", path);
+    APP_LOG("Loading cart: %s\n", path);
 
     // Save current cart path for reset/run
     snprintf(current_cart_path, sizeof(current_cart_path), "%s", path);
@@ -610,7 +613,7 @@ int p8_cart_run(lua_State *L, const char *path) {
     char *file_data = cart_read_file(path, &file_len);
     audio_resume();
     if (!file_data) {
-        printf("ERROR: cannot read %s\n", path);
+        APP_LOG("ERROR: cannot read %s\n", path);
         p8_console_printf("error: cannot read %s\n", path);
         p8_console_draw(); gfx_flip();
         return -1;
@@ -631,7 +634,7 @@ int p8_cart_run(lua_State *L, const char *path) {
     }
 
     if (!lua_code) {
-        printf("ERROR: no code in %s\n", path);
+        APP_LOG("ERROR: no code in %s\n", path);
         p8_console_printf("error: no code in %s\n", path);
         p8_console_draw(); gfx_flip();
         return -1;
@@ -664,7 +667,7 @@ int p8_cart_run(lua_State *L, const char *path) {
     if (status != LUA_OK) {
         const char *err = lua_tostring(L, -1);
         if (err) {
-            printf("ERROR: %s\n", err);
+            APP_LOG("ERROR: %s\n", err);
             p8_console_printf("error: %s\n", err);
             p8_console_draw(); gfx_flip();
         }
@@ -676,7 +679,7 @@ int p8_cart_run(lua_State *L, const char *path) {
     if (status != LUA_OK) {
         const char *err = lua_tostring(L, -1);
         if (err) {
-            printf("ERROR: %s\n", err);
+            APP_LOG("ERROR: %s\n", err);
             p8_console_printf("error: %s\n", err);
             p8_console_draw(); gfx_flip();
         }
@@ -1047,11 +1050,11 @@ const char *p8_cart_picker(void) {
     scan_carts();
 
     if (cart_count == 0) {
-        printf("No .p8 carts found on SD card\n");
+        APP_LOG("No .p8 carts found on SD card\n");
         return NULL;
     }
 
-    printf("Found %d cart(s)\n", cart_count);
+    APP_LOG("Found %d cart(s)\n", cart_count);
 
     int selected = 0;
     int scroll = 0;
@@ -1164,7 +1167,7 @@ static int p8_run_cmd(lua_State *L) {
 static int p8_resume_cmd(lua_State *L) {
     // Resume a stopped cart — re-enter game loop without calling _init()
     if (!has_global_func(L, "_update") && !has_global_func(L, "_update60")) {
-        printf("Nothing to resume\n");
+        APP_LOG("Nothing to resume\n");
         p8_console_printf("nothing to resume\n");
         p8_console_draw(); gfx_flip();
         return 0;

@@ -38,6 +38,9 @@ void audio_volume(int level);
 void audio_pause(void);
 void audio_resume(void);
 
+// Refresh the BSP playback ring and maintain the audio power zone.
+void audio_task(void);
+
 // Lua library opener
 int luaopen_audio(lua_State *L);
 

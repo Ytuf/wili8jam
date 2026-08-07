@@ -2,7 +2,40 @@
 #include <string.h>
 #include "lua.h"
 #include "lauxlib.h"
-#include "tusb.h"
+#include "fw2.h"
+#include "audio.h"
+#include "app_log.h"
+
+#define HID_KEY_A 4
+#define HID_KEY_C 6
+#define HID_KEY_D 7
+#define HID_KEY_E 8
+#define HID_KEY_F 9
+#define HID_KEY_P 19
+#define HID_KEY_Q 20
+#define HID_KEY_S 22
+#define HID_KEY_V 25
+#define HID_KEY_X 27
+#define HID_KEY_Z 29
+#define HID_KEY_ENTER 40
+#define HID_KEY_ESCAPE 41
+#define HID_KEY_BACKSPACE 42
+#define HID_KEY_TAB 43
+#define HID_KEY_ARROW_RIGHT 79
+#define HID_KEY_ARROW_LEFT 80
+#define HID_KEY_ARROW_DOWN 81
+#define HID_KEY_ARROW_UP 82
+#define HID_KEY_SHIFT_LEFT 225
+#define KEYBOARD_MODIFIER_LEFTCTRL 0x01
+#define KEYBOARD_MODIFIER_LEFTSHIFT 0x02
+#define KEYBOARD_MODIFIER_RIGHTCTRL 0x10
+#define KEYBOARD_MODIFIER_RIGHTSHIFT 0x20
+
+
+static fw2kb_t board_kb;
+static bool board_kb_ready;
+static bool game_mode;
+static bool usb_host_ready;
 
 // 256-bit bitfield for all HID keycodes (32 bytes)
 static uint8_t key_state[32];
@@ -161,9 +194,50 @@ void input_mouse_reset(void) {
 
 void input_set_modifier_poll(input_modifier_poll_fn fn) { modifier_poll_fn = fn; }
 
+void input_set_game_mode(bool enabled) { game_mode = enabled; input_flush(); }
+
+void input_set_usb_host_ready(bool ready) { usb_host_ready = ready; }
+
+static void board_input_task(void) {
+    if (!board_kb_ready) { fw2kb_init(&board_kb); board_kb_ready = true; }
+    uartkbd_event_t ev;
+    static const uint8_t game_keys[] = { HID_KEY_ARROW_LEFT, HID_KEY_ARROW_RIGHT, HID_KEY_ARROW_UP, HID_KEY_ARROW_DOWN, HID_KEY_Z };
+    while (uartkbd_next_event(&ev)) {
+        if (game_mode) {
+            uint8_t key = 0;
+            if (ev.btn <= UARTKBD_BTN_RED) key = game_keys[ev.btn];
+            else if (ev.btn == UARTKBD_BTN_PAGE) key = HID_KEY_X;
+            else if (ev.btn == UARTKBD_BTN_HOME) key = HID_KEY_ESCAPE;
+            if (key) input_key_callback(key, 0, ev.pressed, 0);
+        } else if (ev.pressed) {
+            if (ev.btn <= UARTKBD_BTN_RED) fw2kb_press(&board_kb, (fw2kb_btn)ev.btn);
+            else if (ev.btn == UARTKBD_BTN_PAGE) fw2kb_press(&board_kb, FW2KB_BTN_AI);
+        }
+    }
+    fw2kb_event kev;
+    while (!game_mode && fw2kb_next_event(&board_kb, &kev)) {
+        uint8_t key = 0; char ascii = 0;
+        switch (kev.key) {
+        case FW2KB_KEY_CHAR: ascii = kev.ch; break;
+        case FW2KB_KEY_ENTER: key = HID_KEY_ENTER; break;
+        case FW2KB_KEY_BACKSPACE: key = HID_KEY_BACKSPACE; break;
+        case FW2KB_KEY_TAB: key = HID_KEY_TAB; ascii = '\t'; break;
+        case FW2KB_KEY_EXIT: key = HID_KEY_ESCAPE; break;
+        case FW2KB_KEY_LEFT: key = HID_KEY_ARROW_LEFT; break;
+        case FW2KB_KEY_RIGHT: key = HID_KEY_ARROW_RIGHT; break;
+        case FW2KB_KEY_UP: key = HID_KEY_ARROW_UP; break;
+        case FW2KB_KEY_DOWN: key = HID_KEY_ARROW_DOWN; break;
+        default: break;
+        }
+        input_key_callback(key, ascii, true, 0); input_key_callback(key, ascii, false, 0);
+    }
+}
+
 void input_update(void) {
-    // Poll USB host so new HID reports are processed
-    tuh_task();
+    fw2_app_recovery_task();
+    if (usb_host_ready) fw2_pio_usb_host_task();
+    board_input_task();
+    audio_task();
 
     // Sync modifier keys from keyboard driver (Ctrl, Shift, Alt, GUI)
     if (modifier_poll_fn) input_sync_modifiers(modifier_poll_fn());
@@ -436,34 +510,9 @@ static int l_update(lua_State *L) {
 
 static int l_debug(lua_State *L) {
     (void)L;
-    // Check all possible device addresses for mounted HID devices
-    printf("USB Host debug:\n");
-    printf("  tuh_inited: %s\n", tuh_inited() ? "yes" : "no");
-    for (uint8_t addr = 1; addr <= CFG_TUH_DEVICE_MAX; addr++) {
-        if (tuh_mounted(addr)) {
-            printf("  Device addr %d: mounted\n", addr);
-            uint8_t itf_count = tuh_hid_itf_get_count(addr);
-            printf("    HID interfaces: %d\n", itf_count);
-            for (uint8_t itf = 0; itf < itf_count; itf++) {
-                uint8_t proto = tuh_hid_interface_protocol(addr, itf);
-                printf("    itf %d: proto=%d (%s)\n", itf, proto,
-                    proto == 1 ? "keyboard" : proto == 2 ? "mouse" : "other");
-            }
-        }
-    }
-    // Show raw key_state — any bits set?
     int any_keys = 0;
-    for (int i = 0; i < 32; i++) {
-        if (key_state[i]) { any_keys = 1; break; }
-    }
-    printf("  Keys held: %s\n", any_keys ? "yes" : "none");
-    if (any_keys) {
-        for (int i = 0; i < 256; i++) {
-            if (key_is_set(key_state, (uint8_t)i)) {
-                printf("    keycode %d\n", i);
-            }
-        }
-    }
+    for (int i = 0; i < 32; i++) if (key_state[i]) { any_keys = 1; break; }
+    APP_LOG("input: FreeWili buttons/chord keyboard, keys held: %s\n", any_keys ? "yes" : "none");
     return 0;
 }
 

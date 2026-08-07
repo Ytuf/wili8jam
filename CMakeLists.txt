@@ -21,9 +21,7 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 
-# Pico-PIO-USB path must be set BEFORE pico_sdk_init() so TinyUSB creates the target
-set(PICO_PIO_USB_PATH ${CMAKE_CURRENT_SOURCE_DIR}/Pico-PIO-USB)
-
+set(PICO_PIO_USB_PATH "${CMAKE_CURRENT_LIST_DIR}/wilibsp/bsp/third_party/Pico-PIO-USB")
 include(pico_sdk_import.cmake)
 
 project(wili8jam C CXX ASM)
@@ -31,6 +29,7 @@ project(wili8jam C CXX ASM)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 pico_sdk_init()
 add_subdirectory(wilibsp/bsp)
+add_subdirectory(wilibsp/libs/onewili)
 
 # --- Lua 5.4.7 static library ---
 set(LUA_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lua-5.4.7/src)
@@ -62,28 +61,11 @@ set_target_properties(lua54 PROPERTIES LINKER_LANGUAGE C)
 add_library(tlsf STATIC tlsf/tlsf.c)
 target_include_directories(tlsf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-# --- FatFS library (SD card) ---
-add_library(fatfs STATIC
-    fatfs/ff.c
-    fatfs/ffunicode.c
-    fatfs/ffsystem.c
-    fatfs/diskio.c
-)
-target_include_directories(fatfs PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/fatfs
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-# --- USB Host library (PIO-USB, HID, XInput, CDC, MSC) ---
-set(FWUSBHOST_TUSB_DEBUG_LEVEL 2)  # output goes to ring buffer, dumped via 'info'
-add_subdirectory(usb-host)
-
 # --- Main executable ---
 add_executable(wili8jam
     src/main.cpp
     src/newlib_stubs.c
-    src/sdcard.c
+    src/fw2_fs.c
     src/dvi.c
     src/gfx.c
     src/input.c
@@ -95,15 +77,8 @@ add_executable(wili8jam
     src/p8_png.c
     src/p8_console.c
     src/p8_editor.c
-    # TinyUSB host stack — must be compiled in the executable (not fwUSBHost lib)
-    # to avoid duplicate symbols with the device stack from pico_stdio_usb
-    ${FWUSBHOST_TINYUSB_HOST_SOURCES}
 )
 
-# Generate PIO header for I2S audio
-pico_generate_pio_header(wili8jam ${CMAKE_CURRENT_SOURCE_DIR}/src/audio_i2s.pio)
-
-# usb-host/ and tusb_xinput/ include dirs come from fwUSBHost target
 target_include_directories(wili8jam PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -113,8 +88,7 @@ target_include_directories(wili8jam PRIVATE
 target_link_libraries(wili8jam PRIVATE
     lua54
     tlsf
-    fatfs
-    fwUSBHost
+    onewili_fwgui
     freewili2_bsp
     pico_stdlib
     hardware_pio
@@ -125,16 +99,15 @@ target_link_libraries(wili8jam PRIVATE
     hardware_i2c
 )
 
-# Increase stack size — default 0x800 (2KB) is too small for Lua + FatFS
-# Lua call chain can be deep; FIL structs now static to save stack space
+# Increase stack size: Lua call chains and file adapters need more than 2 KB
 target_compile_definitions(wili8jam PRIVATE PICO_STACK_SIZE=0x1000)
 
-# SDK's stdio_usb handles CDC serial (device descriptors, tud_task timer, etc.)
-pico_enable_stdio_usb(wili8jam 1)
+# FreeWili diagnostics are RTT-only; text entry comes from the board keyboard.
+pico_enable_stdio_usb(wili8jam 0)
 pico_enable_stdio_uart(wili8jam 0)
 
 fw2_psram_app(wili8jam
     VERSION 001
-    DESCRIPTION "PICO-8 Lua console and DVI runtime"
+    DESCRIPTION "PICO-8 console with DVI, audio, and SD cartridges"
     REPOSITORY "https://github.com/evaderkrub/wili8jam"
 )

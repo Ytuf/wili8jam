@@ -9,13 +9,13 @@
  */
 
 #include "p8_editor.h"
+#include "app_log.h"
 #include "p8_cart.h"
 #include "p8_console.h"
 #include "gfx.h"
 #include "input.h"
 #include "fatfs/ff.h"
 #include "tlsf/tlsf.h"
-#include "tusb.h"
 #include "pico/stdlib.h"
 
 #include "lua.h"
@@ -769,7 +769,7 @@ static bool safe_write(FIL *fil, const void *data, UINT len) {
     UINT bw;
     FRESULT res = f_write(fil, data, len, &bw);
     if (res != FR_OK || bw != len) {
-        printf("  f_write failed: res=%d, wrote %u/%u\n", res, (unsigned)bw, (unsigned)len);
+        APP_LOG("  f_write failed: res=%d, wrote %u/%u\n", res, (unsigned)bw, (unsigned)len);
         return false;
     }
     return true;
@@ -786,7 +786,7 @@ static bool save_file(void) {
     static FIL fil;  // static to avoid ~600 bytes on stack (Lua call chain is deep)
     FRESULT fres = f_open(&fil, tmp_path, FA_WRITE | FA_CREATE_ALWAYS);
     if (fres != FR_OK) {
-        printf("save: f_open failed: %d\n", fres);
+        APP_LOG("save: f_open failed: %d\n", fres);
         return false;
     }
 
@@ -827,7 +827,7 @@ static bool save_file(void) {
         // Flush all data to SD card before closing
         fres = f_sync(&fil);
         if (fres != FR_OK) {
-            printf("save: f_sync failed: %d\n", fres);
+            APP_LOG("save: f_sync failed: %d\n", fres);
             ok = false;
         }
     }
@@ -837,7 +837,7 @@ static bool save_file(void) {
     if (!ok) {
         // Write failed — delete the temp file, original is untouched
         f_unlink(tmp_path);
-        printf("save: aborted, original file preserved\n");
+        APP_LOG("save: aborted, original file preserved\n");
         return false;
     }
 
@@ -845,7 +845,7 @@ static bool save_file(void) {
     f_unlink(ed_path);     // remove original (ok if it doesn't exist)
     fres = f_rename(tmp_path, ed_path);
     if (fres != FR_OK) {
-        printf("save: rename failed: %d (data in %s)\n", fres, tmp_path);
+        APP_LOG("save: rename failed: %d (data in %s)\n", fres, tmp_path);
         return false;
     }
 
@@ -864,7 +864,7 @@ static bool ensure_allocated(void) {
     text = (char *)tlsf_malloc(ed_tlsf, text_cap);
     line_cache = (int *)tlsf_malloc(ed_tlsf, LINE_CACHE_MAX * sizeof(int));
     if (!text || !line_cache) {
-        printf("editor: out of memory\n");
+        APP_LOG("editor: out of memory\n");
         if (text) { tlsf_free(ed_tlsf, text); text = NULL; }
         if (line_cache) { tlsf_free(ed_tlsf, line_cache); line_cache = NULL; }
         return false;
@@ -910,13 +910,12 @@ void p8_editor_enter(void) {
     sel_active = false;
 
     // Wait for ESC release (debounce from REPL toggle)
-    while (input_key(K_ESC)) { tuh_task(); input_update(); sleep_ms(10); }
+    while (input_key(K_ESC)) { input_update(); sleep_ms(10); }
 
-    printf("editor: %s (%d bytes)\n", ed_path[0] ? ed_path : "[new]", text_len);
+    APP_LOG("editor: %s (%d bytes)\n", ed_path[0] ? ed_path : "[new]", text_len);
 
     // ====== Main editor loop ======
     while (true) {
-        tuh_task();
         input_update();
 
         // ESC: return to REPL (keep state)
@@ -1045,7 +1044,7 @@ void p8_editor_enter(void) {
     }
 
     input_flush();
-    printf("editor closed\n");
+    APP_LOG("editor closed\n");
     // Note: buffers are NOT freed — state persists for re-entry
 }
 
@@ -1096,14 +1095,14 @@ static int lua_save(lua_State *L) {
     const char *path = luaL_optstring(L, 1, "");
 
     if (p8_editor_save(path)) {
-        printf("saved: %s\n", ed_path);
+        APP_LOG("saved: %s\n", ed_path);
         p8_console_printf("saved %s\n", ed_path);
     } else {
         if (!ed_path[0]) {
-            printf("no filename. use: save \"filename\"\n");
+            APP_LOG("no filename. use: save \"filename\"\n");
             p8_console_print("no filename\n");
         } else {
-            printf("save failed: %s\n", ed_path);
+            APP_LOG("save failed: %s\n", ed_path);
             p8_console_printf("save failed: %s\n", ed_path);
         }
     }

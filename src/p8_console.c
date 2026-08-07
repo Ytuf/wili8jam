@@ -6,6 +6,7 @@
  */
 
 #include "p8_console.h"
+#include "app_log.h"
 #include "gfx.h"
 #include "lua.h"
 #include "lauxlib.h"
@@ -130,14 +131,14 @@ static int console_print(lua_State *L) {
     }
     p8_console_print("\n");
 
-    // Mirror to serial (USB CDC)
+    // Mirror to the BSP's RTT diagnostics channel.
     for (int i = 1; i <= n; i++) {
-        if (i > 1) printf("\t");
+        if (i > 1) APP_LOG("\t");
         const char *s = luaL_tolstring(L, i, NULL);
-        if (s) printf("%s", s);
+        if (s) APP_LOG("%s", s);
         lua_pop(L, 1);
     }
-    printf("\n");
+    APP_LOG("\n");
 
     return 0;
 }
