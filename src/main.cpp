@@ -645,19 +645,26 @@ static uint8_t __uninitialized_psram("wili8jam_heap") psram_heap[6 * 1024 * 1024
 
 int main() {
     // fw2_psram_app's SRAM bootstrap has already brought up the board and PSRAM.
+    DIAG("wili8jam: main entered\n");
     fw2_app_recovery_init();
+    DIAG("wili8jam: recovery ready\n");
 
     // fw2_psram_app already initialized the board; diagnostics use BSP RTT.
 
     // Start DVI before switched-rail waits so boot progress is visible.
+    DIAG("wili8jam: gfx init\n");
     gfx_init();
+    DIAG("wili8jam: dvi init\n");
     dvi_init(gfx_get_dvi_buffer());
+    DIAG("wili8jam: dvi ready\n");
     p8_console_init();
     p8_console_print("wili8jam v001\nusb input: initializing\n");
     p8_console_draw();
     gfx_flip();
 
+    DIAG("wili8jam: usb host init\n");
     usb_ready = fw2_pio_usb_host_init();
+    DIAG("wili8jam: usb host %s\n", usb_ready ? "ready" : "unavailable");
     input_set_usb_host_ready(usb_ready);
     if (usb_ready) {
         fw2_pio_usb_host_set_key_callback(input_key_callback);
@@ -705,12 +712,14 @@ int main() {
     p8_console_draw(); gfx_flip();
 
     // Init TLSF allocator on PSRAM
+    DIAG("wili8jam: tlsf init\n");
     psram_tlsf = tlsf_create_with_pool(psram_heap, psram_total_size);
     if (!psram_tlsf) {
         APP_LOG("ERROR: Failed to init TLSF on PSRAM\n");
         while (true) { fw2_app_recovery_task(); tight_loop_contents(); }
     }
     APP_LOG("TLSF heap ready.\n");
+    DIAG("wili8jam: tlsf ready\n");
 
     // Init PICO-8 preprocessor with PSRAM allocator
     p8_preprocess_init(psram_tlsf);
@@ -725,7 +734,9 @@ int main() {
     p8_editor_init(psram_tlsf);
 
     // SD is owned by MAIN and reached through recovery-aware OneWili SDFS.
+    DIAG("wili8jam: OneWili init\n");
     sd_mounted = fw2_fs_init();
+    DIAG("wili8jam: OneWili %s\n", sd_mounted ? "ready" : "unavailable");
     p8_console_print(sd_mounted ? "sd: OneWili ready\n" : "sd: MAIN link unavailable\n");
     p8_console_draw(); gfx_flip();
 
@@ -733,7 +744,9 @@ int main() {
 
     // Init PICO-8 SFX/music engine before starting the BSP mixer.
     p8_sfx_init();
+    DIAG("wili8jam: audio init\n");
     bool audio_ok = audio_init();
+    DIAG("wili8jam: audio %s\n", audio_ok ? "ready" : "unavailable");
     p8_console_print(audio_ok ? "audio: FreeWili BSP ready\n" : "audio: unavailable\n");
 
     // Init PICO-8 SFX/music engine (already initialized above)
@@ -742,12 +755,14 @@ int main() {
     p8_console_draw();
     gfx_flip();
 
+    DIAG("wili8jam: lua init\n");
     lua_State *L = lua_newstate(lua_psram_alloc, NULL);
     if (!L) {
         APP_LOG("ERROR: Failed to create Lua state\n");
         while (true) { fw2_app_recovery_task(); tight_loop_contents(); }
     }
     luaL_openlibs(L);
+    DIAG("wili8jam: lua ready\n");
 
     // Register PICO-8 API globals (must be after openlibs since it overrides print, etc.)
     p8_register_api(L);
@@ -791,6 +806,7 @@ int main() {
     lua_register(L, "help", lua_help);
     lua_register(L, "info", lua_info);
     lua_register(L, "reboot", lua_reboot);
+    DIAG("wili8jam: interactive ready\n");
 
     // Snapshot all built-in globals — anything registered after this point
     // or by carts will be cleaned up on cart switch

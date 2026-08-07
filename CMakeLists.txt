@@ -111,3 +111,14 @@ fw2_psram_app(wili8jam
     DESCRIPTION "PICO-8 console with DVI, audio, and SD cartridges"
     REPOSITORY "https://github.com/evaderkrub/wili8jam"
 )
+
+# A PSRAM image may be accepted by the loader yet fail before main() if a
+# future linker or BSP change moves the bootstrap-sensitive code out of SRAM.
+# Keep the launch ABI checked with the application's own build.
+add_custom_command(TARGET wili8jam POST_BUILD
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_psram_layout.py
+            $<TARGET_FILE:wili8jam> ${CMAKE_OBJDUMP}
+            $<TARGET_FILE_DIR:wili8jam>/wili8jam.uf2
+    VERBATIM
+)
